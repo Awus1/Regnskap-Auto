@@ -4,7 +4,9 @@ Et verktøy i R som automatisk henter et norsk selskaps årsregnskap fra
 Brønnøysundregistrenes åpne API og lager en ferdig PDF-analyse med nøkkeltall.
 
 <img width="410" height="531" alt="image" src="https://github.com/user-attachments/assets/af138630-703a-4ee9-a2b4-8692630f7f5e" />
+![Eksempelrapport](eksempel.png) 
 
+[Last ned hele rapporten](bergen.engines.pdf)
 
 ## Hva det gjør
 
