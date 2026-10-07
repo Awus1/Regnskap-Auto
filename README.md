@@ -28,7 +28,7 @@ Brønnøysundregistrenes åpne API og lager en ferdig PDF-analyse med nøkkeltal
 
 ## Begrensning
 
-Den åpne delen av Regnskapsregisteret gir kun siste innsendte år, og bryter ikke
+Den åpne delen av Regnskapsregisteret gir kun siste innsendte år på de fleste selskap, og bryter ikke
 ut varelager og kundefordringer. Derfor er likviditetsgrad 2 og kredittid
 utelatt. Full flerårshistorikk på linjenivå ligger i den lukkede delen som er
 forbeholdt offentlige myndigheter.
