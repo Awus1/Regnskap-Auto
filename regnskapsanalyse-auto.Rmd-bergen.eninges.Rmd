@@ -1,0 +1,267 @@
+---
+title: "Regnskapsanalyse"
+subtitle: "Automatisk hentet fra Regnskapsregisteret"
+author: "Awus Kyei-Mensah"
+date: "`r format(Sys.Date(), '%d.%m.%Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    number_sections: true
+    fig_width: 6
+    fig_height: 3.2
+lang: nb
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(jsonlite)
+
+# ============================================================================
+#  VELG SELSKAP HER: sett inn organisasjonsnummeret (9 siffer, ingen mellomrom)
+# ============================================================================
+orgnr <- "997016238"
+
+# ---- Hent data fra Brønnøysund ---------------------------------------------
+raw_json <- fromJSON(paste0("https://data.brreg.no/regnskapsregisteret/regnskap/", orgnr),
+                     simplifyVector = FALSE)
+
+if (length(raw_json) == 0)
+  stop("Fant ingen regnskap for dette organisasjonsnummeret i den åpne feeden.")
+
+# Selskapsnavn fra Enhetsregisteret (faller tilbake til orgnr ved feil)
+selskap <- tryCatch(
+  fromJSON(paste0("https://data.brreg.no/enhetsregisteret/api/enheter/", orgnr),
+           simplifyVector = FALSE)[["navn"]],
+  error = function(e) orgnr
+)
+
+# Trygg uthenting fra nøstet liste: returnerer NA hvis feltet mangler
+pick <- function(x, ...) {
+  for (k in c(...)) { if (is.null(x[[k]])) return(NA_real_); x <- x[[k]] }
+  if (length(x) == 0) NA_real_ else as.numeric(x)
+}
+
+hent_ar <- function(y) data.frame(
+  aar = as.integer(substr(y[["regnskapsperiode"]][["tilDato"]], 1, 4)),
+  di  = pick(y, "resultatregnskapResultat", "driftsresultat", "driftsinntekter", "sumDriftsinntekter"),
+  dr  = pick(y, "resultatregnskapResultat", "driftsresultat", "driftsresultat"),
+  fin = pick(y, "resultatregnskapResultat", "finansresultat", "nettoFinans"),
+  rk  = pick(y, "resultatregnskapResultat", "finansresultat", "finanskostnad", "sumFinanskostnad"),
+  res = pick(y, "resultatregnskapResultat", "aarsresultat"),
+  om  = pick(y, "eiendeler", "omloepsmidler", "sumOmloepsmidler"),
+  ta  = pick(y, "eiendeler", "sumEiendeler"),
+  ek  = pick(y, "egenkapitalGjeld", "egenkapital", "sumEgenkapital"),
+  sg  = pick(y, "egenkapitalGjeld", "gjeldOversikt", "sumGjeld"),
+  kg  = pick(y, "egenkapitalGjeld", "gjeldOversikt", "kortsiktigGjeld", "sumKortsiktigGjeld"),
+  stringsAsFactors = FALSE
+)
+
+df <- do.call(rbind, lapply(raw_json, hent_ar))
+df <- df[order(df$aar), ]
+
+yr  <- as.character(df$aar)
+n   <- nrow(df)
+di <- df$di; dr <- df$dr; fin <- df$fin; rk <- df$rk; res <- df$res
+om <- df$om; ta <- df$ta; ek <- df$ek; sg <- df$sg; kg <- df$kg
+tk <- ta
+
+# ---- Nøkkeltall (bare de som åpne data dekker) -----------------------------
+safe_div <- function(a, b) ifelse(b == 0 | is.na(b) | is.na(a), NA_real_, a / b)
+
+lg1          <- safe_div(om, kg)
+soliditet    <- safe_div(ek, tk)
+gjeldsgrad   <- safe_div(sg, ek)
+finansinntekt <- fin + rk                          # nettofinans + finanskostnad = finansinntekter
+rentedekning  <- safe_div(dr + finansinntekt, rk)  # (driftsres. + finansinnt.) / finanskostnad
+driftsmargin  <- safe_div(dr, di)
+tkr           <- safe_div(dr + finansinntekt, tk)  # driftsres. + finansinnt. i telleren
+ekr           <- safe_div(res, ek)                 # på sluttbalanse (feeden gir bare ett år)
+
+# ---- Klassifisering og formatering -----------------------------------------
+hi <- function(v, good, ok) ifelse(is.na(v), "Ikke aktuelt",
+                                   ifelse(v >= good, "Sunt", ifelse(v >= ok, "Middels", "Svakt")))
+lo <- function(v, good, ok) ifelse(is.na(v), "Ikke aktuelt",
+                                   ifelse(v <= good, "Sunt", ifelse(v <= ok, "Middels", "Svakt")))
+
+f_ratio <- function(v) ifelse(is.na(v), "–", formatC(v, format = "f", digits = 2, decimal.mark = ","))
+f_pct   <- function(v) ifelse(is.na(v), "–", paste0(formatC(100 * v, format = "f", digits = 1, decimal.mark = ","), " \\%"))
+f_kr    <- function(v) ifelse(is.na(v), "–", paste0(formatC(v / 1e6, format = "f", digits = 1, big.mark = " ", decimal.mark = ","), " mill. kr"))
+```
+
+**`r selskap`**  (org.nr `r orgnr`)
+
+Tallene er hentet automatisk fra Brønnøysundregistrenes åpne regnskapsregister.
+Registeret ga `r n` regnskapsår for dette selskapet. Merk at den åpne feeden ikke
+bryter ut varelager og kundefordringer, så likviditetsgrad 2 og kredittid er
+utelatt (de krever linjenivå fra den lukkede delen av registeret).
+
+# Sammendrag
+
+I siste tilgjengelige regnskapsår (`r max(df$aar)`) hadde selskapet driftsinntekter
+på `r f_kr(tail(di, 1))`, et driftsresultat på `r f_kr(tail(dr, 1))` og et
+årsresultat på `r f_kr(tail(res, 1))`. Driftsmarginen økte fra 17,6 til 24,2 prosent, og totalkapitalrentabiliteten har ligget over 13 prosent alle tre år. Driften er altså både lønnsom og i bedring.
+
+Bergen Engines produserer gass- og dieselmotorer til kraftproduksjon og skipsfart fra Hordvikneset i Bergen. Selskapet ble skilt ut fra Rolls-Royce og solgt til britiske Langley Holdings i 2021, og regnskapene fra 2023 til 2025 viser et selskap i god utvikling under nye eiere.
+
+Det som skiller seg ut, er balansen. Egenkapitalandelen falt fra 52 til under 25 prosent i 2025, samtidig som resultatet ble bedre. Når soliditeten svekkes i et godt år, er det sjelden tap som er forklaringen.
+
+Rentedekningsgraden steg fra 3,5 til 13,6, så gjeldsøkningen består i hovedsak av rentefri gjeld. Det kan skyldes en utdeling til eier i form av utbytte eller konsernbidrag, eller store forskudd fra kunder som følge av økt ordreinngang. De to forklaringene har ulik betydning for selskapets reelle soliditet, og drøftes i kapittel 4
+
+Egenkapitalrentabiliteten på 54 prosent bør leses i lys av dette. Den høye avkastningen skyldes delvis at egenkapitalen er blitt mindre, ikke bare at resultatet er blitt bedre
+
+# Nøkkeltall
+
+```{r nokkeltall-tabell}
+tab <- data.frame(check.names = FALSE, stringsAsFactors = FALSE,
+                  `Nøkkeltall` = c("Likviditetsgrad 1", "Egenkapitalandel",
+                                   "Gjeldsgrad", "Rentedekningsgrad",
+                                   "Driftsmargin", "Totalkapitalrentabilitet",
+                                   "Egenkapitalrentabilitet"))
+
+fmt_rows <- list(f_ratio(lg1), f_pct(soliditet), f_ratio(gjeldsgrad),
+                 f_ratio(rentedekning), f_pct(driftsmargin), f_pct(tkr), f_pct(ekr))
+
+for (j in seq_along(yr)) tab[[ yr[j] ]] <- sapply(fmt_rows, function(v) v[j])
+
+# Terskler for soliditet. Gjeldsgrad regnes ut fra de samme,
+# siden gjeldsgrad = (1 - EK-andel) / EK-andel
+ek_sunt    <- 0.35
+ek_middels <- 0.15
+gg_sunt    <- (1 - ek_sunt) / ek_sunt        # 1,86
+gg_middels <- (1 - ek_middels) / ek_middels  # 5,67
+
+levels_latest <- c(hi(lg1, 1.5, 1)[n],
+                   hi(soliditet, ek_sunt, ek_middels)[n],
+                   lo(gjeldsgrad, gg_sunt, gg_middels)[n],
+                   hi(rentedekning, 3, 1)[n],
+                   hi(driftsmargin, 0.10, 0.03)[n],
+                   hi(tkr, 0.10, 0.05)[n],
+                   hi(ekr, 0.15, 0.05)[n])
+
+bg <- recode(levels_latest, "Sunt" = "#e6f6ec", "Middels" = "#fdf3e0",
+             "Svakt" = "#fdeaea", "Ikke aktuelt" = "#eef0f3")
+fg <- recode(levels_latest, "Sunt" = "#10673a", "Middels" = "#8a5a00",
+             "Svakt" = "#9a1e1e", "Ikke aktuelt" = "#5b6472")
+
+tab$Vurdering <- cell_spec(levels_latest, format = "latex",
+                           background = bg, color = fg, bold = TRUE)
+
+kbl(tab, format = "latex", booktabs = TRUE, escape = FALSE,
+    align = c("l", rep("r", n), "c"), linesep = "",
+    caption = "Nøkkeltall. Vurderingen gjelder siste regnskapsår.") %>%
+  kable_styling(latex_options = c("HOLD_position"), full_width = FALSE, font_size = 10)
+```
+
+# Utvikling over tid
+
+```{r plot-margin, fig.cap="Driftsmargin."}
+ggplot(data.frame(aar = as.integer(yr), y = driftsmargin), aes(aar, y)) +
+  geom_line(color = "#2f5bff", linewidth = 1) +
+  geom_point(color = "#2f5bff", size = 2.6) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_x_continuous(breaks = as.integer(yr)) +
+  labs(x = NULL, y = NULL) + theme_minimal(base_size = 12)
+```
+
+```{r plot-likviditet, fig.cap="Likviditetsgrad 1. Stiplet linje viser kritisk nivå (1,0)."}
+ggplot(data.frame(aar = as.integer(yr), y = lg1), aes(aar, y)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "#d83a3a") +
+  geom_line(color = "#2f5bff", linewidth = 1) +
+  geom_point(color = "#2f5bff", size = 2.6) +
+  scale_x_continuous(breaks = as.integer(yr)) +
+  labs(x = NULL, y = NULL) + theme_minimal(base_size = 12)
+```
+
+```{r plot-soliditet, fig.cap="Egenkapitalandel (soliditet)."}
+ggplot(data.frame(aar = as.integer(yr), y = soliditet), aes(aar, y)) +
+  geom_line(color = "#2f5bff", linewidth = 1) +
+  geom_point(color = "#2f5bff", size = 2.6) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_x_continuous(breaks = as.integer(yr)) +
+  labs(x = NULL, y = NULL) + theme_minimal(base_size = 12)
+```
+Tabellen og figurene viser en tydelig todeling i perioden 2023 til 2025. Lønnsomheten har utviklet seg jevnt positivt, mens likviditet og soliditet har svekket seg, med det klart største utslaget i 2025. Utviklingen beskrives under for hver gruppe nøkkeltall, mens årsakene drøftes i kapittel 4.
+
+## Lønnsomhet
+
+Driftsmarginen har økt hvert år i perioden, fra 17,6 prosent i 2023 til 19,9 prosent i 2024 og 24,2 prosent i 2025. Det er en samlet forbedring på 6,6 prosentpoeng, og veksten var nesten dobbelt så stor i 2025 som i 2024. Bergen Engines sitter dermed igjen med en stadig større del av hver krone i driftsinntekter.
+
+Totalkapitalrentabiliteten følger ikke det samme mønsteret. Den steg kraftig fra 13,0 til 19,6 prosent i 2024, men falt tilbake til 17,7 prosent i 2025. At totalkapitalrentabiliteten faller samtidig som driftsmarginen øker, betyr at totalkapitalen har vokst raskere enn resultatet i 2025. Nivået er likevel godt over 10 prosent alle tre år.
+
+Egenkapitalrentabiliteten svinger mest av alle nøkkeltallene. Den falt fra 36,1 til 22,4 prosent i 2024, før den mer enn doblet seg til 54,0 prosent i 2025. Svingningene er større enn utviklingen i resultatet alene kan forklare, og må ses i sammenheng med endringene i egenkapitalen beskrevet under.
+
+## Soliditet
+
+Egenkapitalandelen har falt begge årene, men i svært ulikt tempo. Fra 2023 til 2024 var fallet moderat, fra 60,6 til 52,0 prosent. I 2025 ble egenkapitalandelen mer enn halvert, til 24,8 prosent. Over hele perioden er fallet på 35,8 prosentpoeng, og tre fjerdedeler av det skjedde i 2025.
+
+Gjeldsgraden speiler den samme utviklingen. Den økte fra 0,65 til 0,92 i 2024, og mer enn tredoblet seg til 3,04 i 2025. Selskapet har dermed gått fra å ha betydelig mer egenkapital enn gjeld, til å ha omtrent tre kroner gjeld for hver krone egenkapital.
+
+Rentedekningsgraden har likevel utviklet seg motsatt vei. Den lå stabilt rundt 3 til 3,5 i 2023 og 2024, men steg til 13,6 i 2025. Driftsresultatet dekker altså rentekostnadene nesten fire ganger så godt som året før, til tross for at gjelden har økt kraftig.
+
+## Likviditet
+
+Likviditetsgrad 1 har falt jevnt gjennom perioden, fra 1,67 i 2023 til 1,51 i 2024 og 1,15 i 2025. Fallet i 2025 var mer enn dobbelt så stort som året før. Omløpsmidlene dekker fortsatt den kortsiktige gjelden, men marginen er redusert fra 67 til 15 prosent over to år.
+
+## Oppsummering
+
+Bergen Engines har blitt mer lønnsomt i drift, men har samtidig mindre egenkapital og likviditet å tære på enn ved inngangen til perioden. Den største endringen skjedde i 2025, da soliditeten ble svekket kraftig i det samme året som driftsmarginen var på sitt høyeste. Kombinasjonen av økt gjeld og sterkt forbedret rentedekning er det mest påfallende trekket i perioden, og drøftes nærmere i kapittel 4.
+
+
+# Analyse
+
+Kapittel 3 viste at lønnsomheten har økt samtidig som soliditeten og likviditeten er svekket. Denne kombinasjonen kan ha svært ulike forklaringer, og de har ulik betydning for hvordan selskapet bør vurderes. Analysen under ser derfor bak nøkkeltallene og drøfter hva som mest sannsynlig driver utviklingen, og hvilke områder en revisor bør se nærmere på.
+
+## Kvaliteten på egenkapitalrentabiliteten
+
+Egenkapitalrentabiliteten på 54 prosent ser sterk ut isolert sett, men den forteller lite om driften alene. Totalkapitalrentabiliteten, som måler avkastningen på all kapital uavhengig av finansiering, falt fra 2024 til 2025. Økningen i egenkapitalrentabiliteten kommer dermed ikke fra at eiendelene arbeider bedre, men fra at de i større grad er finansiert med gjeld.
+
+Dette er den klassiske giringseffekten: Så lenge totalkapitalen forrenter seg høyere enn gjelden koster, vil mer gjeld løfte avkastningen til eierne. Effekten virker begge veier. Et år med svakere marginer vil slå langt hardere ut på egenkapitalrentabiliteten nå enn i 2023, fordi egenkapitalen er en mye mindre buffer. Den høye egenkapitalrentabiliteten er altså et uttrykk for økt finansiell risiko like mye som for god drift.
+
+## Hva slags gjeld er det?
+
+Det mest interessante funnet i tallene er at gjeldsgraden mer enn tredoblet seg, samtidig som rentedekningsgraden nesten firedoblet seg. Hvis den nye gjelden var vanlige banklån, ville rentekostnadene økt og rentedekningen falt. At det motsatte skjer, betyr at mesteparten av gjeldsøkningen må være rentefri. For et selskap som Bergen Engines er det særlig to typer rentefri gjeld som kan forklare mønsteret.
+
+**Forklaring 1: Utdeling til eier.** Et avsatt, men ikke utbetalt utbytte eller konsernbidrag føres som kortsiktig gjeld ved årsslutt. Det reduserer egenkapitalen direkte, øker gjelden og påvirker ikke rentekostnadene. Med en eier som Langley Holdings er det naturlig at overskudd hentes ut av datterselskapet.
+
+**Forklaring 2: Forskudd fra kunder.** Bergen Engines leverer store motorer på kontrakt, med lang produksjonstid. I slike bransjer er det vanlig at kunden betaler forskudd ved bestilling. Forskuddene føres som kortsiktig gjeld frem til motoren leveres. En sterk ordreinngang vil derfor blåse opp balansen: kontantbeholdningen og gjelden øker like mye, egenkapitalandelen faller selv om egenkapitalen i kroner er uendret, og likviditetsgrad 1 trekkes ned mot 1.
+
+Forklaring 2 passer også med et annet funn fra kapittel 3: at totalkapitalrentabiliteten falt selv om driftsmarginen økte. Det skjer når balansen vokser raskere enn resultatet, noe store kundeforskudd nettopp vil gi.
+
+De to forklaringene gir svært ulike konklusjoner. Ved utdeling har selskapet faktisk mindre egenkapital og mindre buffer. Ved kundeforskudd er svekkelsen i nøkkeltallene i stor grad teknisk, og fallet i likviditetsgrad 1 er mindre alvorlig enn det ser ut, siden forskuddene gjøres opp ved å levere motorer, ikke ved å betale ut penger. Den åpne delen av Regnskapsregisteret skiller ikke mellom disse gjeldspostene, så spørsmålet kan ikke avgjøres ut fra nøkkeltallene alene. Det enkleste testen er å se på egenkapitalen i kroner: har den falt, er det utdeling. Er den stabil, er det balansevekst.
+
+## Risikoområder for revisor
+
+Utviklingen peker på tre områder en revisor typisk ville prioritert.
+
+**Inntektsføring og periodisering.** Driftsmarginen er den høyeste i perioden. I et selskap med store kontrakter er tidspunktet for inntektsføring et vurderingsspørsmål, særlig dersom inntekter føres løpende etter fremdrift. Små endringer i anslag på ferdigstillelsesgrad eller gjenstående kostnader kan flytte resultat mellom år. Revisor bør teste kontraktene rundt årsskiftet og vurdere om marginforbedringen er reell eller skyldes periodisering.
+
+**Garantiavsetninger.** Motorprodusenter har garantiansvar for leverte produkter. En reduksjon i garantiavsetningene vil øke resultatet uten at driften er blitt bedre. Når marginen stiger kraftig, er det naturlig å sjekke om forutsetningene bak avsetningene er endret.
+
+**Transaksjoner med nærstående parter.** Som del av et internasjonalt konsern kan Bergen Engines ha konserninterne kjøp, salg og lån. Prising av slike transaksjoner påvirker hvor overskuddet havner, og konserninterne fordringer kan gjøre likviditeten bedre eller dårligere enn tallene viser. Dersom det er foretatt en utdeling, må den i tillegg vurderes opp mot kravet til forsvarlig egenkapital og likviditet i aksjeloven § 3-4.
+
+## Begrensninger
+
+Analysen bygger på nøkkeltall fra den åpne delen av Regnskapsregisteret, som ikke bryter ut varelager, kundefordringer eller ulike typer kortsiktig gjeld. Flere av konklusjonene over er derfor hypoteser som bør bekreftes mot årsregnskapets noter, særlig noten om egenkapital og spesifikasjonen av kortsiktig gjeld.
+
+
+# Konklusjon og anbefaling
+
+Bergen Engines har en lønnsom og voksende drift. Driftsmarginen er den høyeste i perioden, og selskapet har god evne til å betjene rentebærende gjeld. Svakheten ligger i balansen: soliditeten og likviditeten er klart svekket i 2025, og egenkapitalrentabiliteten er i stor grad drevet av økt gjeldsfinansiering.
+
+Hvor alvorlig svekkelsen er, avhenger av hva den nye gjelden består av. Skyldes den kundeforskudd, er selskapet i en sterk posisjon med god ordreinngang, og nøkkeltallene undervurderer den reelle soliditeten. Skyldes den utdeling til eier, har selskapet faktisk mindre buffer, og tåler et svakere år dårligere enn før. Samlet vurderes selskapet som økonomisk sunt i drift, men med økt finansiell risiko som bør avklares.
+
+## Anbefaling
+
+Før selskapet vurderes videre, for eksempel som kunde, kredittmottaker eller revisjonsklient, anbefales det å innhente årsregnskapet med noter og avklare tre forhold:
+
+- **Egenkapitalen i kroner.** Noten om egenkapital viser om det er foretatt utdeling i 2025. Har egenkapitalen falt i kroner, er svekkelsen reell.
+- **Sammensetningen av kortsiktig gjeld.** Skille mellom kundeforskudd, skyldig utbytte eller konsernbidrag, leverandørgjeld og konserngjeld avgjør hvordan likviditeten bør tolkes.
+- **Grunnlaget for marginforbedringen.** Inntektsføring på kontrakter og endringer i garantiavsetninger bør gjennomgås for å bekrefte at resultatforbedringen er varig og ikke skyldes periodisering eller endrede estimater.
+
+Dersom gjennomgangen viser at gjeldsøkningen i hovedsak er kundeforskudd, og marginforbedringen er driftsmessig, er Bergen Engines en solid virksomhet med gode utsikter. Dersom den viser en stor utdeling, bør utviklingen i likviditet og egenkapital følges tett fremover, og utdelingen vurderes opp mot kravet til forsvarlig egenkapital og likviditet i aksjeloven § 3-4.
